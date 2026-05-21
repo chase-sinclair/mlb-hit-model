@@ -1,0 +1,20 @@
+# Environment
+.env
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Data — regeneratable, potentially large
+data/cache/
+data/training/
+
+# Outputs — predictions and logs
+outputs/
+
+# Claude session data
+.claude/
