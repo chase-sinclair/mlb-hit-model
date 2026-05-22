@@ -210,10 +210,20 @@ All 5 processors built per spec formulas:
 
 ---
 
-### Phase 5 — Evaluation + Scheduler ⏳ NOT YET BUILT
+### Phase 5 — Evaluation + Scheduler ✅ COMPLETE
 
-- `model/evaluate.py`: backtest predictions vs actual box scores, ROI simulation at edge > 0.05
-- `scheduler.py`: `schedule.every().day.at("11:30").do(job)` — already spec'd, straightforward
+**model/evaluate.py**
+- `fetch_actuals(date_str)` — pulls MLB boxscore API for all games on a date, returns `{player_id: did_get_hit}`
+- `evaluate_day(date_str)` — loads predictions CSV, matches to actuals, computes calibration error + per-tier breakdown + ROI simulation
+- `backtest(start_date, end_date)` — loops over all prediction CSVs in range, returns summary DataFrame
+- ROI simulation: flat $100 bet on every play with edge > 5% at -110 vig
+- CLI: `python evaluate.py YYYY-MM-DD` (single day) or `python evaluate.py YYYY-MM-DD YYYY-MM-DD` (range)
+- **Note:** evaluate.py requires completed games — running mid-game returns 0 hits (expected)
+
+**scheduler.py**
+- `schedule.every().day.at("11:30").do(job)` — runs `main.py` as subprocess at 11:30 AM ET daily
+- Logs to `outputs/logs/scheduler.log` with 7-day rotation, 30-day retention
+- Run with `python scheduler.py` (blocks; Ctrl+C to stop)
 
 ---
 
