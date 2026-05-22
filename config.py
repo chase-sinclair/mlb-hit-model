@@ -86,11 +86,13 @@ FEATURE_WEIGHTS = {
     "batter_h_pct_season":         0.07,
     "batter_xba_season":           0.06,
     "babip_regression_delta":      0.06,
+    "batter_k_rate":               0.05,  # strikeout rate — contact quality signal
     "career_h_ab_vs_pitcher":      0.08,
     "arsenal_weighted_ba":         0.10,
     "arsenal_weighted_whiff":      0.04,
     "pitcher_h9_season":           0.05,
     "pitcher_xfip":                0.05,
+    "pitcher_k9":                  0.05,  # K/9 — replaces constant xfip signal in practice
     "pitcher_babip_against":       0.03,
     "pitcher_last3_hits_avg":      0.04,
     "pitcher_fatigue_score":       0.03,
@@ -116,8 +118,10 @@ LEAGUE_AVG = {
     "xba":          0.250,
     "babip":        0.295,
     "h9":           8.7,
+    "k9":           8.4,   # K/9 innings, MLB 2022-2024 average
     "whiff_pct":    0.245,
     "hard_hit_pct": 0.365,
+    "k_rate":       0.265, # K/AB league average 2022-2024
 }
 
 # Spec weights sum to 1.10 — normalize to 1.0 while preserving relative importance

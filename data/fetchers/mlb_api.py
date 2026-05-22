@@ -156,13 +156,15 @@ def get_batter_season_stats(player_id: int, season: int, date_str: str = None) -
     for split in data.get("stats", [{}])[0].get("splits", []):
         s = split.get("stat", {})
         return {
-            "avg": _f(s.get("avg")),
-            "obp": _f(s.get("obp")),
-            "slg": _f(s.get("slg")),
-            "hits": s.get("hits", 0),
-            "at_bats": s.get("atBats", 0),
-            "games": s.get("gamesPlayed", 0),
-            "babip": _f(s.get("babip")),
+            "avg":        _f(s.get("avg")),
+            "obp":        _f(s.get("obp")),
+            "slg":        _f(s.get("slg")),
+            "hits":       s.get("hits", 0),
+            "at_bats":    s.get("atBats", 0),
+            "strikeouts": s.get("strikeOuts", 0),
+            "walks":      s.get("baseOnBalls", 0),
+            "games":      s.get("gamesPlayed", 0),
+            "babip":      _f(s.get("babip")),
         }
     return None
 

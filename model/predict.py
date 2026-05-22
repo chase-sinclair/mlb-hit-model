@@ -38,11 +38,13 @@ _NORM_RANGES = {
     "batter_h_pct_season":         (0.15, 0.40),
     "batter_xba_season":           (0.15, 0.38),
     "babip_regression_delta":      (-0.08, 0.08),
+    "batter_k_rate":               (0.10, 0.38),  # low K rate = elite contact
     "career_h_ab_vs_pitcher":      (0.0, 0.50),
     "arsenal_weighted_ba":         (0.15, 0.40),
     "arsenal_weighted_whiff":      (0.10, 0.45),
     "pitcher_h9_season":           (5.0, 13.0),
     "pitcher_xfip":                (2.5, 6.0),
+    "pitcher_k9":                  (5.0, 14.0),   # high K9 = tough pitcher
     "pitcher_babip_against":       (0.25, 0.36),
     "pitcher_last3_hits_avg":      (3.0, 12.0),
     "pitcher_fatigue_score":       (0.0, 1.0),
@@ -100,6 +102,8 @@ _BATTER_FAVORABLE_HIGH = {
 _BATTER_FAVORABLE_LOW = {
     "arsenal_weighted_whiff",   # lower whiff = batter makes more contact
     "pitcher_xfip",             # lower xFIP = better pitcher = fewer hits (bad for batter)
+    "batter_k_rate",            # lower K rate = more contact = more hits
+    "pitcher_k9",               # lower K9 = more hittable pitcher
 }
 
 
@@ -192,11 +196,13 @@ def _default_value(feature: str) -> float:
         "batter_h_pct_season":         LEAGUE_AVG["ba"],
         "batter_xba_season":           LEAGUE_AVG["xba"],
         "babip_regression_delta":      0.0,
+        "batter_k_rate":               LEAGUE_AVG["k_rate"],
         "career_h_ab_vs_pitcher":      LEAGUE_AVG["ba"],
         "arsenal_weighted_ba":         LEAGUE_AVG["ba"],
         "arsenal_weighted_whiff":      LEAGUE_AVG["whiff_pct"],
         "pitcher_h9_season":           LEAGUE_AVG["h9"],
         "pitcher_xfip":                4.0,
+        "pitcher_k9":                  LEAGUE_AVG["k9"],
         "pitcher_babip_against":       LEAGUE_AVG["babip"],
         "pitcher_last3_hits_avg":      LEAGUE_AVG["h9"],
         "pitcher_fatigue_score":       0.0,

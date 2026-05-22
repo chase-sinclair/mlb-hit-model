@@ -136,6 +136,12 @@ def _build_features(
     if season.get("at_bats") and season.get("at_bats", 0) > 0:
         h_pct_season = round(season.get("hits", 0) / season["at_bats"], 3)
 
+    batter_k_rate = None
+    s_ab = season.get("at_bats", 0) or 0
+    s_k  = season.get("strikeouts", 0) or 0
+    if s_ab >= 50:
+        batter_k_rate = round(s_k / s_ab, 4)
+
     career_ba_vs = vs_pitcher.get("avg") if vs_pitcher else None
 
     return {
@@ -144,11 +150,13 @@ def _build_features(
         "batter_h_pct_season":       h_pct_season,
         "batter_xba_season":         statcast.get("xba"),
         "babip_regression_delta":    babip_delta,
+        "batter_k_rate":             batter_k_rate,
         "career_h_ab_vs_pitcher":    career_ba_vs,
         "arsenal_weighted_ba":       arsenal_result.get("arsenal_weighted_ba"),
         "arsenal_weighted_whiff":    arsenal_result.get("arsenal_weighted_whiff"),
         "pitcher_h9_season":         pitcher_season.get("h9"),
         "pitcher_xfip":              xfip_d.get("xfip"),
+        "pitcher_k9":                pitcher_season.get("k9"),
         "pitcher_babip_against":     pitcher_season.get("babip"),
         "pitcher_last3_hits_avg":    pitcher_data.get("last3_hits"),
         "pitcher_fatigue_score":     fatigue,

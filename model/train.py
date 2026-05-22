@@ -31,6 +31,7 @@ AB_EVENTS = frozenset({
     "strikeout_double_play", "field_out", "grounded_into_double_play",
     "force_out", "double_play", "fielders_choice", "fielders_choice_out",
 })
+K_EVENTS = frozenset({"strikeout", "strikeout_double_play"})
 
 
 # ── Data download ─────────────────────────────────────────────────────────────
@@ -85,12 +86,47 @@ def _pull_statcast_season(season: int) -> pd.DataFrame | None:
     return df
 
 
+# ── Cross-season matchup precompute ──────────────────────────────────────────
+
+def _precompute_global_matchup(df: pd.DataFrame) -> dict:
+    """
+    Returns {(batter_id, pitcher_id, game_date): est_ba} across all loaded seasons.
+
+    Uses Bayesian shrinkage: est = (cum_h + LEAGUE_BA * K) / (cum_ab + K), K=60.
+    Stored BEFORE each game_date so there is no lookahead.
+    Even 10 AB of history moves the estimate ~2% off league average.
+    """
+    SHRINK_K = 60
+    LEAGUE_BA = LEAGUE_AVG["ba"]
+
+    cache: dict = {}
+    pa_df = df[df["events"].notna()].copy()
+    pa_df["is_hit"] = pa_df["events"].isin(HIT_EVENTS).astype(int)
+    pa_df["is_ab"]  = pa_df["events"].isin(AB_EVENTS).astype(int)
+    pa_df["game_date"] = pd.to_datetime(pa_df["game_date"])
+
+    for (batter_id, pitcher_id), grp in tqdm(
+        pa_df.groupby(["batter", "pitcher"]),
+        desc="  Cross-season matchup precompute", leave=False,
+    ):
+        grp_sorted = grp.sort_values("game_date")
+        cum_h, cum_ab = 0, 0
+        for game_date, gdata in grp_sorted.groupby("game_date"):
+            est_ba = (cum_h + LEAGUE_BA * SHRINK_K) / (cum_ab + SHRINK_K)
+            cache[(int(batter_id), int(pitcher_id), game_date)] = round(float(est_ba), 4)
+            cum_h  += int(gdata["is_hit"].sum())
+            cum_ab += int(gdata["is_ab"].sum())
+
+    return cache
+
+
 # ── Pitcher feature precompute ────────────────────────────────────────────────
 
-def _pitcher_snapshot(r_hits, r_outs, r_bip, pitch_stats, game_log) -> dict:
+def _pitcher_snapshot(r_hits, r_outs, r_bip, r_k, pitch_stats, game_log) -> dict:
     """Build pitcher feature dict from cumulative running state."""
     total_ip = r_outs / 3.0
-    h9 = (r_hits / total_ip * 9.0) if total_ip >= 9.0 else LEAGUE_AVG["h9"]
+    h9    = (r_hits / total_ip * 9.0) if total_ip >= 9.0 else LEAGUE_AVG["h9"]
+    k9    = (r_k    / total_ip * 9.0) if total_ip >= 9.0 else LEAGUE_AVG["k9"]
     babip = r_hits / r_bip if r_bip >= 30 else LEAGUE_AVG["babip"]
 
     recent = game_log[-3:]
@@ -137,6 +173,7 @@ def _pitcher_snapshot(r_hits, r_outs, r_bip, pitch_stats, game_log) -> dict:
         "arsenal_weighted_ba":     round(float(arsenal_ba), 4),
         "arsenal_weighted_whiff":  round(float(arsenal_whiff), 4),
         "pitcher_h9_season":       round(float(h9), 3),
+        "pitcher_k9":              round(float(k9), 3),
         "pitcher_xfip":            4.0,
         "pitcher_babip_against":   round(float(babip), 4),
         "pitcher_last3_hits_avg":  round(float(last3_hits_avg), 3),
@@ -153,9 +190,10 @@ def _precompute_pitcher_features(df: pd.DataFrame) -> dict:
     cache: dict = {}
 
     df = df.copy()
-    df["is_hit"] = df["events"].isin(HIT_EVENTS).fillna(False).astype(int)
-    df["is_ab"] = df["events"].isin(AB_EVENTS).fillna(False).astype(int)
-    df["is_bip"] = (df["type"] == "X").astype(int)
+    df["is_hit"]   = df["events"].isin(HIT_EVENTS).fillna(False).astype(int)
+    df["is_ab"]    = df["events"].isin(AB_EVENTS).fillna(False).astype(int)
+    df["is_k"]     = df["events"].isin(K_EVENTS).fillna(False).astype(int)
+    df["is_bip"]   = (df["type"] == "X").astype(int)
     df["is_whiff"] = (
         (df["description"] == "swinging_strike").astype(int)
         if "description" in df.columns else 0
@@ -164,21 +202,23 @@ def _precompute_pitcher_features(df: pd.DataFrame) -> dict:
     for pitcher_id, pdata in tqdm(df.groupby("pitcher"), desc="  Pitcher precompute", leave=False):
         pdata = pdata.sort_values("game_date")
 
-        r_hits, r_outs, r_bip = 0, 0, 0
+        r_hits, r_outs, r_bip, r_k = 0, 0, 0, 0
         pitch_stats: dict = defaultdict(lambda: {"cnt": 0, "hits": 0, "ab": 0, "whiffs": 0})
         game_log: list = []
 
         for game_date, gdata in pdata.groupby("game_date"):
             cache[(int(pitcher_id), game_date)] = _pitcher_snapshot(
-                r_hits, r_outs, r_bip, pitch_stats, game_log
+                r_hits, r_outs, r_bip, r_k, pitch_stats, game_log
             )
 
             gpa = gdata[gdata["events"].notna()]
             g_hits = int(gpa["is_hit"].sum())
             g_outs = int(gpa["is_ab"].sum()) - g_hits
+            g_k    = int(gpa["is_k"].sum())
             r_hits += g_hits
             r_outs += max(0, g_outs)
-            r_bip += int(gdata["is_bip"].sum())
+            r_bip  += int(gdata["is_bip"].sum())
+            r_k    += g_k
 
             for pt, ptdata in gdata.groupby("pitch_type"):
                 if not pt or str(pt) in ("nan", ""):
@@ -205,11 +245,12 @@ _PA_WEIGHTS = {1: 4.7, 2: 4.5, 3: 4.3, 4: 4.1, 5: 3.9,
                6: 3.7, 7: 3.5, 8: 3.3, 9: 3.1}
 
 
-def _extract_features(df: pd.DataFrame, season: int) -> list[dict]:
+def _extract_features(df: pd.DataFrame, season: int, matchup_cache: dict = None) -> list[dict]:
     """One training row per (batter, game), features computed from prior data only."""
     pa_df = df[df["events"].notna()].copy()
     pa_df["is_hit"] = pa_df["events"].isin(HIT_EVENTS).astype(int)
-    pa_df["is_ab"] = pa_df["events"].isin(AB_EVENTS).astype(int)
+    pa_df["is_ab"]  = pa_df["events"].isin(AB_EVENTS).astype(int)
+    pa_df["is_k"]   = pa_df["events"].isin(K_EVENTS).astype(int)
     pa_df["is_bip"] = (pa_df["type"] == "X").astype(int)
     pa_df["ev"] = pd.to_numeric(pa_df["launch_speed"] if "launch_speed" in pa_df.columns else np.nan, errors="coerce")
     pa_df["xba"] = pd.to_numeric(
@@ -237,6 +278,7 @@ def _extract_features(df: pd.DataFrame, season: int) -> list[dict]:
         game_agg = bdata.groupby(["game_pk", "game_date"]).agg(
             hits=("is_hit", "sum"),
             ab=("is_ab", "sum"),
+            k_count=("is_k", "sum"),
             bip=("is_bip", "sum"),
             ev_avg=("ev", "mean"),
             xba_avg=("xba", "mean"),
@@ -258,7 +300,7 @@ def _extract_features(df: pd.DataFrame, season: int) -> list[dict]:
             continue
 
         # Running season stats (updated AFTER each row is appended)
-        s_hits = s_ab = s_bip = s_bip_hits = s_xba_n = 0
+        s_hits = s_ab = s_bip = s_bip_hits = s_xba_n = s_k = 0
         s_xba_sum = 0.0
         game_hist: list = []  # dicts
 
@@ -266,9 +308,10 @@ def _extract_features(df: pd.DataFrame, season: int) -> list[dict]:
             gdate = pd.Timestamp(game["game_date"])
 
             # Season stats before this game
-            s_h_pct  = s_hits / s_ab if s_ab >= 10 else LEAGUE_AVG["ba"]
-            s_xba    = s_xba_sum / s_xba_n if s_xba_n >= 10 else LEAGUE_AVG["xba"]
-            s_babip  = s_bip_hits / s_bip if s_bip >= 20 else LEAGUE_AVG["babip"]
+            s_h_pct    = s_hits / s_ab if s_ab >= 10 else LEAGUE_AVG["ba"]
+            s_xba      = s_xba_sum / s_xba_n if s_xba_n >= 10 else LEAGUE_AVG["xba"]
+            s_babip    = s_bip_hits / s_bip if s_bip >= 20 else LEAGUE_AVG["babip"]
+            batter_k_rate = s_k / s_ab if s_ab >= 50 else LEAGUE_AVG["k_rate"]
 
             # Rolling windows
             cut14 = gdate - timedelta(days=14)
@@ -297,11 +340,17 @@ def _extract_features(df: pd.DataFrame, season: int) -> list[dict]:
                 p_key = None
             pf = pitcher_cache.get(p_key, {}) if p_key else {}
 
-            # Career H/AB vs pitcher (same-season prior data)
+            # Career H/AB vs pitcher — cross-season Bayesian shrinkage
             try:
-                pid_int = int(opp_pid)
-                vs = bdata[(bdata["pitcher"] == pid_int) & (bdata["game_date"] < gdate)]
-                career_avg = vs["is_hit"].sum() / vs["is_ab"].sum() if vs["is_ab"].sum() >= 15 else LEAGUE_AVG["ba"]
+                if matchup_cache is not None:
+                    career_avg = matchup_cache.get(
+                        (int(batter_id), int(opp_pid), gdate), LEAGUE_AVG["ba"]
+                    )
+                else:
+                    # Fallback: same-season only (old behavior)
+                    pid_int = int(opp_pid)
+                    vs = bdata[(bdata["pitcher"] == pid_int) & (bdata["game_date"] < gdate)]
+                    career_avg = vs["is_hit"].sum() / vs["is_ab"].sum() if vs["is_ab"].sum() >= 15 else LEAGUE_AVG["ba"]
             except (TypeError, ValueError):
                 career_avg = LEAGUE_AVG["ba"]
 
@@ -338,11 +387,13 @@ def _extract_features(df: pd.DataFrame, season: int) -> list[dict]:
                 "batter_h_pct_season":       round(s_h_pct, 4),
                 "batter_xba_season":         round(s_xba, 4),
                 "babip_regression_delta":    round(babip_delta, 4),
+                "batter_k_rate":             round(batter_k_rate, 4),
                 "career_h_ab_vs_pitcher":    round(float(career_avg), 4),
                 "arsenal_weighted_ba":       pf.get("arsenal_weighted_ba",    LEAGUE_AVG["ba"]),
                 "arsenal_weighted_whiff":    pf.get("arsenal_weighted_whiff", LEAGUE_AVG["whiff_pct"]),
                 "pitcher_h9_season":         pf.get("pitcher_h9_season",      LEAGUE_AVG["h9"]),
                 "pitcher_xfip":              pf.get("pitcher_xfip",           4.0),
+                "pitcher_k9":                pf.get("pitcher_k9",             LEAGUE_AVG["k9"]),
                 "pitcher_babip_against":     pf.get("pitcher_babip_against",  LEAGUE_AVG["babip"]),
                 "pitcher_last3_hits_avg":    pf.get("pitcher_last3_hits_avg", LEAGUE_AVG["h9"]),
                 "pitcher_fatigue_score":     pf.get("pitcher_fatigue_score",  0.0),
@@ -369,6 +420,7 @@ def _extract_features(df: pd.DataFrame, season: int) -> list[dict]:
             })
             s_hits += int(game["hits"])
             s_ab   += int(game["ab"])
+            s_k    += int(game.get("k_count", 0))
             s_bip  += g_bip
             s_bip_hits += g_bip_hit
             if xba_val is not None:
@@ -382,26 +434,66 @@ def _extract_features(df: pd.DataFrame, season: int) -> list[dict]:
 
 def build_training_dataset(start_season: int = 2022, end_season: int = 2024) -> pd.DataFrame | None:
     TRAINING_DIR.mkdir(parents=True, exist_ok=True)
-    all_dfs: list[pd.DataFrame] = []
+    seasons = list(range(start_season, end_season + 1))
 
-    for season in range(start_season, end_season + 1):
+    # Step 1: Identify which seasons have up-to-date CSVs vs need rebuilding
+    good_csvs: dict[int, pd.DataFrame] = {}
+    needs_rebuild: list[int] = []
+    for season in seasons:
         csv_path = TRAINING_DIR / f"training_data_{season}.csv"
         if csv_path.exists():
-            logger.info(f"Season {season} cached at {csv_path.name}")
-            all_dfs.append(pd.read_csv(csv_path))
-            continue
+            try:
+                _check = pd.read_csv(csv_path, nrows=1)
+                if "batter_k_rate" in _check.columns:
+                    logger.info(f"Season {season} cached at {csv_path.name}")
+                    good_csvs[season] = pd.read_csv(csv_path)
+                    continue
+                logger.info(f"Season {season} CSV missing new features — rebuilding...")
+            except Exception:
+                pass
+        needs_rebuild.append(season)
 
+    if not needs_rebuild:
+        combined = pd.concat(list(good_csvs.values()), ignore_index=True)
+        logger.info(f"Combined dataset: {len(combined):,} rows, hit rate: {combined['did_get_hit'].mean():.3f}")
+        return combined
+
+    # Step 2: Load ALL parquets (needed so cross-season matchup cache has full history)
+    parquets: dict[int, pd.DataFrame] = {}
+    for season in seasons:
         raw = _pull_statcast_season(season)
-        if raw is None or raw.empty:
-            logger.warning(f"No data for {season}, skipping")
-            continue
+        if raw is not None and not raw.empty:
+            parquets[season] = raw
 
+    if not parquets:
+        logger.error("No Statcast data available.")
+        return None
+
+    # Step 3: Build global cross-season matchup cache (memory-efficient: 4 columns only)
+    logger.info("Building cross-season matchup cache...")
+    _matchup_cols = ["batter", "pitcher", "game_date", "events"]
+    slim_frames = [
+        df[[c for c in _matchup_cols if c in df.columns]].copy()
+        for df in parquets.values()
+    ]
+    all_slim = pd.concat(slim_frames, ignore_index=True)
+    matchup_cache = _precompute_global_matchup(all_slim)
+    del all_slim
+    logger.info(f"  Matchup cache: {len(matchup_cache):,} batter-pitcher-date entries")
+
+    # Step 4: Extract features for seasons that need it
+    all_dfs: list[pd.DataFrame] = list(good_csvs.values())
+    for season in needs_rebuild:
+        raw = parquets.get(season)
+        if raw is None:
+            logger.warning(f"No parquet for {season} — skipping")
+            continue
+        csv_path = TRAINING_DIR / f"training_data_{season}.csv"
         logger.info(f"Extracting features for {season} ({len(raw):,} pitch rows)...")
-        rows = _extract_features(raw, season)
+        rows = _extract_features(raw, season, matchup_cache)
         if not rows:
             logger.warning(f"No rows extracted for {season}")
             continue
-
         df = pd.DataFrame(rows)
         df.to_csv(csv_path, index=False)
         logger.info(f"Saved {len(df):,} rows → {csv_path.name}")

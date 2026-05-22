@@ -179,44 +179,32 @@ All 5 processors built per spec formulas:
 
 ---
 
-### Phase 4 — Training ✅ COMPLETE
+### Phase 4 — Training ✅ COMPLETE (retrained 2026-05-22 with new features)
 
 **model/train.py**
 - `build_training_dataset(2022, 2024)`: pulls Statcast pitch-by-pitch data monthly via pybaseball, caches each season as parquet (`data/training/statcast_raw_{season}.parquet`), extracts one feature row per batter-game with strict no-lookahead (all rolling stats computed from games strictly before the target date)
 - `_precompute_pitcher_features()`: processes each pitcher's game log chronologically, building a `{(pitcher_id, game_date): features}` lookup dict — avoids O(n²) re-filtering the full dataset
-- `train_model()`: XGBClassifier (n_estimators=300, max_depth=4, lr=0.05) + CalibratedClassifierCV isotonic cv=5, 2022–2023 train / 2024 holdout test, saves `model/artifacts/hit_model.pkl` + `scaler.pkl`
-- Runtime: ~50 min total (download + feature extraction + training); re-runs skip to feature extraction via parquet cache
+- `_precompute_global_matchup()`: cross-season batter vs pitcher Bayesian shrinkage — `est_ba = (cum_h + 0.250 * 60) / (cum_ab + 60)` — produces 349,970 batter-pitcher-date entries across all three seasons
+- `train_model()`: XGBClassifier (n_estimators=300, max_depth=4, lr=0.05, subsample=0.8, colsample_bytree=0.8) + CalibratedClassifierCV isotonic cv=5, 2022–2023 train / 2024 holdout test, saves `model/artifacts/hit_model.pkl` + `scaler.pkl`
+- Runtime: ~50 min first run (download + features + training); ~20 min retrain (parquet cache avoids re-download)
+- Auto-detects stale CSVs missing new features and triggers rebuild
 
-**Training results (2024 holdout):**
-- Dataset: 146,029 rows, 57.6% hit rate
-- AUC-ROC: 0.6036 | Brier: 0.2340 vs baseline 0.2446
-- `main.py` now auto-loads XGBoost probabilities instead of sigmoid fallback
+**Training results (2024 holdout) — v2 with Bayesian matchup + k9 features:**
+- Dataset: 146,029 rows, 57.5% hit rate
+- AUC-ROC: 0.6059 (+0.0023 vs v1) | Brier: 0.2337 vs baseline 0.2446
+- `main.py` auto-loads XGBoost probabilities instead of sigmoid fallback
 
-**Feature importances (XGBoost):**
+**Feature importances (XGBoost, top 8 from retrain log):**
 | Feature | Importance | Note |
 |---|---|---|
-| pitcher_last3_hits_avg | 0.281 | Dominant signal |
-| times_through_order | 0.088 | |
-| handedness_split | 0.081 | |
-| pitcher_fatigue_score | 0.074 | |
-| batter_h_pct_season | 0.060 | |
-| babip_regression_delta | 0.050 | |
-| arsenal_weighted_whiff | 0.045 | |
-| batter_xba_season | 0.042 | |
-| pitcher_h9_season | 0.039 | |
-| batter_h_pct_14day | 0.038 | |
-| exit_velocity_14day | 0.038 | |
-| park_factor | 0.036 | |
-| arsenal_weighted_ba | 0.034 | |
-| pitcher_babip_against | 0.034 | |
-| batter_h_pct_7day | 0.032 | |
-| lineup_position_pa_weight | 0.028 | |
-| career_h_ab_vs_pitcher | 0.000 | Constant in training (insufficient matchup history) |
-| pitcher_xfip | 0.000 | Constant in training (always 4.0) |
-| bullpen_h9 | 0.000 | Constant in training (always league avg) |
-| game_total | 0.000 | Constant in training (always 8.5) |
-| weather_score | 0.000 | Constant in training (always 0.0) |
-| umpire_zone_score | 0.000 | Constant in training (always 0.0) |
+| pitcher_last3_hits_avg | 0.2783 | Dominant signal |
+| handedness_split | 0.0843 | |
+| times_through_order | 0.0719 | |
+| pitcher_fatigue_score | 0.0686 | |
+| batter_k_rate | 0.0556 | New in v2 — batter strikeout rate |
+| batter_h_pct_season | 0.0547 | |
+| babip_regression_delta | 0.0383 | |
+| arsenal_weighted_whiff | 0.0365 | |
 
 **Adaptation:** Six features were constants in training data (no historical odds, weather, umpire, or bullpen data available). XGBoost learned nothing from them — they contribute only via the sigmoid fallback path. Live pipeline feeds real values for all six. Future retraining with richer data would unlock these signals.
 
